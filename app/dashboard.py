@@ -4,9 +4,11 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import folium
+from folium.plugins import AntPath, LocateControl
 import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
+from streamlit_geolocation import streamlit_geolocation
 from src.router import TransitRouter
 
 st.set_page_config(
@@ -40,22 +42,24 @@ def get_router(stops_df):
 stops_df, admin_df = load_data()
 router = get_router(stops_df)
 
-st.title("🚌 CamTransit AI — Phnom Penh Smart Transit Assistant")
+st.title("🚌 CamTransit AI — Phnom Penh Smart Transit Navigator")
 
 tab_route, tab_coverage = st.tabs(
-    ["🧭 Route & Transfer Finder", "🗺️ City Coverage & Underserved Areas"]
+    ["🧭 Live Route & Transfer Navigator", "🗺️ City Coverage & Underserved Areas"]
 )
 
 # ==============================================================================
-# TAB 1: ROUTE & TRANSFER PLANNER
+# TAB 1: LIVE ROUTE & TRANSFER NAVIGATOR
 # ==============================================================================
 with tab_route:
-    st.subheader("Where are you going in Phnom Penh?")
+    st.subheader("Plan Your Trip Across Phnom Penh")
 
-    # Build a combined searchable list of Bus Stops + Sangkats/Khans
-    stop_places = stops_df[["stop_name_kh", "bus_line", "latitude", "longitude"]].drop_duplicates(
-        subset=["stop_name_kh"]
-    ).copy()
+    # Build searchable list of Bus Stops + Sangkats/Khans
+    stop_places = (
+        stops_df[["stop_name_kh", "bus_line", "latitude", "longitude"]]
+        .drop_duplicates(subset=["stop_name_kh"])
+        .copy()
+    )
     stop_places["label"] = "🚏 Stop: " + stop_places["stop_name_kh"]
 
     admin_places = admin_df[admin_df["location_type"].isin(["Khan", "Sangkat"])][
@@ -70,133 +74,191 @@ with tab_route:
         ],
         ignore_index=True,
     )
-
     place_labels = places_df["label"].tolist()
 
     # Default example: Ta Khmau Roundabout -> ITC (សាលាតិចណូ)
-    default_start = next(
-        (i for i, x in enumerate(place_labels) if "រង្វង់មូលតាខ្មៅ" in x), 0
-    )
-    default_end = next(
-        (i for i, x in enumerate(place_labels) if "សាលាតិចណូ" in x), 1
-    )
+    default_start = next((i for i, x in enumerate(place_labels) if "រង្វង់មូលតាខ្មៅ" in x), 0)
+    default_end = next((i for i, x in enumerate(place_labels) if "សាលាតិចណូ" in x), 1)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        origin_label = st.selectbox("From (Current Location)", place_labels, index=default_start)
-    with c2:
+    # --- GPS / Origin & Destination Controls ---
+    gps_col, start_col, end_col = st.columns([0.8, 1.6, 1.6])
+
+    with gps_col:
+        st.markdown("**📡 Live GPS Location**")
+        use_gps = st.checkbox("Use My GPS", value=False)
+        user_loc = None
+        if use_gps:
+            user_loc = streamlit_geolocation()
+
+    with start_col:
+        if use_gps and user_loc and user_loc.get("latitude") is not None:
+            origin_lat = float(user_loc["latitude"])
+            origin_lng = float(user_loc["longitude"])
+            origin_label = f"📡 My Live GPS ({origin_lat:.5f}, {origin_lng:.5f})"
+            st.text_input("From (Current Location)", value=origin_label, disabled=True)
+        else:
+            if use_gps:
+                st.caption("Click the target button above and allow browser location access.")
+            origin_label = st.selectbox("From (Current Location)", place_labels, index=default_start)
+            origin_row = places_df[places_df["label"] == origin_label].iloc[0]
+            origin_lat, origin_lng = float(origin_row["latitude"]), float(origin_row["longitude"])
+
+    with end_col:
         dest_label = st.selectbox("To (Destination)", place_labels, index=default_end)
+        dest_row = places_df[places_df["label"] == dest_label].iloc[0]
+        dest_lat, dest_lng = float(dest_row["latitude"]), float(dest_row["longitude"])
 
-    origin_row = places_df[places_df["label"] == origin_label].iloc[0]
-    dest_row = places_df[places_df["label"] == dest_label].iloc[0]
-
-    itinerary = router.find_route(
-        origin_row["latitude"],
-        origin_row["longitude"],
-        dest_row["latitude"],
-        dest_row["longitude"],
-    )
+    itinerary = router.find_route(origin_lat, origin_lng, dest_lat, dest_lng)
 
     if not itinerary:
         st.error("No connected bus route found between these two locations.")
     else:
         # Summary KPIs
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Bus Transfers Needed", f"{itinerary['num_transfers']} transfer(s)")
+        m1.metric("Bus Transfers", f"{itinerary['num_transfers']} change(s)")
         m2.metric("Total Bus Ride", f"{itinerary['total_ride_km']} km")
         m3.metric("Walk to First Stop", f"{itinerary['walk_to_first_stop_m']:.0f} m")
         m4.metric("Walk to Destination", f"{itinerary['walk_from_last_stop_m']:.0f} m")
 
-        left_col, right_col = st.columns([1, 1.4])
+        left_col, right_col = st.columns([1.05, 1.45])
 
         with left_col:
-            st.markdown("### 📋 Step-by-Step Directions")
+            st.markdown("### 📋 Station-by-Station Navigation")
 
-            if itinerary["walk_to_first_stop_m"] > 20:
+            if itinerary["walk_to_first_stop_m"] > 15:
                 st.info(
-                    f"🚶 **Walk {itinerary['walk_to_first_stop_m']:.0f}m** to boarding stop: "
+                    f"🚶 **Walk {itinerary['walk_to_first_stop_m']:.0f}m** to boarding station: "
                     f"**{itinerary['segments'][0]['board_stop']}**"
                 )
 
             for idx, seg in enumerate(itinerary["segments"], start=1):
-                num_stops = len(seg["stops"]) - 1
+                stops_in_leg = seg["stops"]
+                num_stops = len(stops_in_leg) - 1
+
                 st.success(
-                    f"**Step {idx} — Take {seg['bus_line']}**\n\n"
-                    f"- **Board at:** {seg['board_stop']}\n"
-                    f"- **Ride:** {num_stops} stop(s) ({seg['distance_m']/1000:.2f} km)\n"
-                    f"- **Get off at:** {seg['alight_stop']}"
+                    f"**Leg {idx} — Board {seg['bus_line']}**\n\n"
+                    f"- **Start Station:** {seg['board_stop']}\n"
+                    f"- **Pass Through:** {num_stops} station(s) ({seg['distance_m']/1000:.2f} km)\n"
+                    f"- **Exit Station:** {seg['alight_stop']}"
                 )
+
+                # Expandable list of every station along this leg so user can track next stops
+                with st.expander(f"🚏 View all {len(stops_in_leg)} stations on {seg['bus_line']}", expanded=(idx == 1)):
+                    for s_num, st_info in enumerate(stops_in_leg, start=1):
+                        if s_num == 1:
+                            badge = "🟢 **BOARD HERE**"
+                        elif s_num == len(stops_in_leg):
+                            badge = "🔴 **GET OFF HERE**"
+                        else:
+                            badge = f"⬇️ Next Station #{s_num}"
+                        st.markdown(f"{s_num}. {st_info['stop_name_kh']} — {badge}")
 
                 if idx - 1 < len(itinerary["transfers"]):
                     tr = itinerary["transfers"][idx - 1]
                     st.warning(
-                        f"🔄 **CHANGE BUS ({tr['walk_m']:.0f}m walk)**\n\n"
-                        f"Get off **{tr['from_line']}** at **{tr['from_stop']}** "
-                        f"→ Switch to **{tr['to_line']}** at **{tr['to_stop']}**"
+                        f"🔄 **TRANSFER BUS ({tr['walk_m']:.0f}m walk)**\n\n"
+                        f"Exit **{tr['from_line']}** at **{tr['from_stop']}** "
+                        f"→ Walk to **{tr['to_stop']}** and board **{tr['to_line']}**"
                     )
 
-            if itinerary["walk_from_last_stop_m"] > 20:
+            if itinerary["walk_from_last_stop_m"] > 15:
                 st.info(
                     f"🚶 **Walk {itinerary['walk_from_last_stop_m']:.0f}m** from "
                     f"**{itinerary['segments'][-1]['alight_stop']}** to your destination."
                 )
 
         with right_col:
-            st.markdown("### 🗺️ Route Map")
-            mid_lat = (origin_row["latitude"] + dest_row["latitude"]) / 2
-            mid_lng = (origin_row["longitude"] + dest_row["longitude"]) / 2
+            st.markdown("### 🗺️ Animated Direction Map (Google Maps Style)")
+            mid_lat = (origin_lat + dest_lat) / 2
+            mid_lng = (origin_lng + dest_lng) / 2
             route_map = folium.Map(location=[mid_lat, mid_lng], zoom_start=12, tiles="OpenStreetMap")
 
-            # Start & End Pins
+            # Add Google Maps-style "Locate Me" button directly onto the map
+            LocateControl(auto_start=use_gps, position="topleft").add_to(route_map)
+
+            # Origin Marker (Blue pulsing-style pin if GPS, Green play pin otherwise)
             folium.Marker(
-                [origin_row["latitude"], origin_row["longitude"]],
+                [origin_lat, origin_lng],
                 tooltip=f"Start: {origin_label}",
-                icon=folium.Icon(color="green", icon="play"),
+                icon=folium.Icon(color="blue" if use_gps else "green", icon="user" if use_gps else "play"),
             ).add_to(route_map)
 
+            # Destination Marker
             folium.Marker(
-                [dest_row["latitude"], dest_row["longitude"]],
+                [dest_lat, dest_lng],
                 tooltip=f"Destination: {dest_label}",
                 icon=folium.Icon(color="red", icon="flag"),
             ).add_to(route_map)
 
-            seg_colors = ["#0055ff", "#e6194b", "#911eb4", "#f58231"]
+            # Dashed walking connector from Origin -> First Boarding Stop
+            first_stop = itinerary["segments"][0]["stops"][0]
+            folium.PolyLine(
+                [(origin_lat, origin_lng), (first_stop["latitude"], first_stop["longitude"])],
+                color="#555555",
+                weight=3,
+                dash_array="6, 8",
+                tooltip=f"Walk {itinerary['walk_to_first_stop_m']:.0f}m to {first_stop['stop_name_kh']}",
+            ).add_to(route_map)
+
+            # Animated AntPath for each bus leg showing direction toward next station
+            seg_colors = ["#0055ff", "#e6194b", "#911eb4", "#008080"]
             for s_idx, seg in enumerate(itinerary["segments"]):
                 color = seg_colors[s_idx % len(seg_colors)]
                 coords = [(s["latitude"], s["longitude"]) for s in seg["stops"]]
                 if len(coords) > 1:
-                    folium.PolyLine(
-                        coords,
+                    AntPath(
+                        locations=coords,
                         color=color,
-                        weight=5,
-                        opacity=0.9,
+                        pulse_color="#ffffff",
+                        weight=6,
+                        delay=800,
                         tooltip=f"{seg['bus_line']}: {seg['board_stop']} → {seg['alight_stop']}",
                     ).add_to(route_map)
 
-                for stop in seg["stops"]:
+                for step_i, stop in enumerate(seg["stops"], start=1):
                     folium.CircleMarker(
                         [stop["latitude"], stop["longitude"]],
-                        radius=4,
+                        radius=4.5,
                         color=color,
                         fill=True,
-                        fill_color=color,
-                        tooltip=f"{stop['stop_name_kh']} ({seg['bus_line']})",
+                        fill_color="#ffffff" if step_i not in (1, len(seg["stops"])) else color,
+                        fill_opacity=1.0,
+                        tooltip=f"#{step_i} {stop['stop_name_kh']} ({seg['bus_line']})",
                     ).add_to(route_map)
 
-            # Highlight transfer points with orange circles
-            for tr in itinerary["transfers"]:
-                tr_stop = next(
-                    (n for n in itinerary["path_nodes"] if n["stop_name_kh"] == tr["to_stop"]),
-                    None,
-                )
-                if tr_stop:
-                    folium.Marker(
-                        [tr_stop["latitude"], tr_stop["longitude"]],
-                        tooltip=f"TRANSFER: {tr['from_line']} → {tr['to_line']} at {tr['to_stop']}",
-                        icon=folium.Icon(color="orange", icon="refresh"),
-                    ).add_to(route_map)
+            # Draw dashed transfer walking tracks & orange transfer pins
+            for t_idx, tr in enumerate(itinerary["transfers"]):
+                seg_before_last_stop = itinerary["segments"][t_idx]["stops"][-1]
+                seg_after_first_stop = itinerary["segments"][t_idx + 1]["stops"][0]
 
-            st_folium(route_map, width=None, height=520, returned_objects=[])
+                folium.PolyLine(
+                    [
+                        (seg_before_last_stop["latitude"], seg_before_last_stop["longitude"]),
+                        (seg_after_first_stop["latitude"], seg_after_first_stop["longitude"]),
+                    ],
+                    color="#ff8800",
+                    weight=4,
+                    dash_array="5, 8",
+                    tooltip=f"Transfer Walk ({tr['walk_m']:.0f}m): {tr['from_stop']} → {tr['to_stop']}",
+                ).add_to(route_map)
+
+                folium.Marker(
+                    [seg_after_first_stop["latitude"], seg_after_first_stop["longitude"]],
+                    tooltip=f"TRANSFER HERE: {tr['from_line']} → {tr['to_line']} at {tr['to_stop']}",
+                    icon=folium.Icon(color="orange", icon="refresh"),
+                ).add_to(route_map)
+
+            # Dashed walking connector from Last Stop -> Destination
+            last_stop = itinerary["segments"][-1]["stops"][-1]
+            folium.PolyLine(
+                [(last_stop["latitude"], last_stop["longitude"]), (dest_lat, dest_lng)],
+                color="#555555",
+                weight=3,
+                dash_array="6, 8",
+                tooltip=f"Walk {itinerary['walk_from_last_stop_m']:.0f}m to destination",
+            ).add_to(route_map)
+
+            st_folium(route_map, width=None, height=560, returned_objects=[])
 
 
 # ==============================================================================
@@ -233,6 +295,7 @@ with tab_coverage:
     k4.metric(f"Median Distance ({admin_level})", f"{filtered_admin['nearest_stop_m'].median():.0f} m")
 
     cov_map = folium.Map(location=[11.5564, 104.9282], zoom_start=12, tiles="OpenStreetMap")
+    LocateControl(auto_start=False, position="topleft").add_to(cov_map)
     line_color_map = {line: LINE_COLORS[i % len(LINE_COLORS)] for i, line in enumerate(all_lines)}
 
     for line in selected_lines:
