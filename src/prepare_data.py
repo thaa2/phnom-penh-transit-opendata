@@ -1,4 +1,3 @@
-cat << 'EOF' > src/prepare_data.py
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -64,7 +63,7 @@ def clean_admin_locations(csv_path: Path) -> pd.DataFrame:
         }
     )
     df["zip_code"] = df["zip_code"].astype(str)
-    df["name"] = df["name"].str.replace(r"/$", "l", regex=True).str.strip()  # Fix Kambou/ -> Kamboul
+    df["name"] = df["name"].str.replace(r"/$", "l", regex=True).str.strip()
     df["latitude"] = df["Latitude"].apply(dms_to_decimal)
     df["longitude"] = df["Longtitude"].apply(dms_to_decimal)
     return df[["zip_code", "name", "location_type", "latitude", "longitude"]]
@@ -72,7 +71,6 @@ def clean_admin_locations(csv_path: Path) -> pd.DataFrame:
 
 def enrich_with_transit_metrics(admin_df: pd.DataFrame, stops_df: pd.DataFrame) -> pd.DataFrame:
     """Compute distance (meters) to nearest bus stop and count of stops within 500m."""
-    # Equirectangular approximation around Phnom Penh (11.55° N) for fast KDTree queries
     lat_ref = np.radians(11.55)
     m_per_deg_lat = 111_132.0
     m_per_deg_lng = 111_320.0 * np.cos(lat_ref)
@@ -145,4 +143,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-EOF
