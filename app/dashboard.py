@@ -11,6 +11,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 from streamlit_geolocation import streamlit_geolocation
 from src.router import TransitRouter
+from src.road_geometry import snap_to_road
 
 st.set_page_config(
     page_title="CamTransit AI — Phnom Penh Smart Transit",
@@ -21,13 +22,12 @@ st.set_page_config(
 DATA_DIR = Path("data/processed")
 
 LINE_COLORS = [
-    "#e6194b", "#3cb44b", "#4363d8", "#f58231",
-    "#911eb4", "#008080", "#f032e6", "#9a6324",
-    "#800000", "#000075", "#e6beff", "#808000",
-    "#46f0f0", "#bcf60c", "#fabebe", "#aaffc3",
+    "#3cb44b", "#3cb44b", "#3cb44b", "#e6194b",
+    "#e6194b", "#e6194b", "#1e5aa8", "#e888b3",
+    "#f58231", "#911eb4", "#008080", "#9a6324",
+    "#800000", "#000075", "#808000", "#46f0f0",
 ]
 
-# Common Khmer -> English transit landmark glossary for searchable bilingual labels
 KH_EN_GLOSSARY = {
     "សាលាតិចណូ": "Sala Techno (ITC)",
     "រង្វង់មូលតាខ្មៅ": "Ta Khmau Roundabout",
@@ -54,11 +54,84 @@ KH_EN_GLOSSARY = {
     "ផ្សារទំនើបអ៊ីអន": "AEON Mall",
 }
 
+SERVICES_DATA = {
+    "daily": {
+        "icon": "🚌",
+        "title_en": "Daily Bus Operations",
+        "title_km": "ប្រតិបត្តិការខ្សែរត់ប្រចាំថ្ងៃ",
+        "days_en": "Daily (Monday – Sunday)",
+        "days_km": "ដំណើរការរៀងរាល់ថ្ងៃ",
+        "hours_en": "05:30 AM – 08:30 PM",
+        "hours_km": "០៥:៣០នាទីព្រឹក ដល់ ២០:៣០នាទីយប់",
+        "wait_en": "10 to 15 minutes",
+        "wait_km": "១០ ទៅ ១៥ នាទី",
+        "price_en": "1,500 KHR",
+        "price_km": "១៥០០ រៀល",
+        "qty_en": "1 Person",
+        "qty_km": "១ នាក់",
+        "valid_en": "1 Trip",
+        "valid_km": "១ លើក",
+        "line_codes": ["1", "2", "3", "4A", "4C", "5A", "5B", "6", "7", "8", "9", "10", "11", "12", "13"],
+        "note_en": "Covers all regular Phnom Penh City Bus routes across the capital and Ta Khmau.",
+        "note_km": "គ្របដណ្តប់គ្រប់ខ្សែរថយន្តក្រុងសាធារណៈប្រចាំថ្ងៃក្នុងរាជធានីភ្នំពេញ និងក្រុងតាខ្មៅ។",
+    },
+    "walk_street": {
+        "icon": "🚶‍♂️🚌",
+        "title_en": "Weekend Walk Street Support",
+        "title_km": "ប្រតិបត្តិការខ្សែរត់គាំទ្រផ្លូវថ្មើរជើង (Walk Street)",
+        "days_en": "Every Saturday & Sunday",
+        "days_km": "រៀងរាល់ថ្ងៃសៅរ៍ និងថ្ងៃអាទិត្យ",
+        "hours_en": "06:00 PM – 11:00 PM",
+        "hours_km": "១៨:០០នាទីរសៀល ដល់ ២៣:០០នាទីយប់",
+        "wait_en": "10 to 15 minutes",
+        "wait_km": "១០ ទៅ ១៥ នាទី",
+        "price_en": "1,500 KHR",
+        "price_km": "១៥០០ រៀល",
+        "qty_en": "1 Person",
+        "qty_km": "១ នាក់",
+        "valid_en": "1 Trip",
+        "valid_km": "១ លើក",
+        "line_codes": ["1", "2", "3", "4A"],
+        "note_en": "Evening shuttle support connecting Riverside / Chaktomuk Walk Street visitors via Lines 1C, 2A, 3, and 4A.",
+        "note_km": "សេវាដឹកជញ្ជូនពេលល្ងាចគាំទ្រអ្នកដើរកម្សាន្តផ្លូវថ្មើរជើងមាត់ទន្លេ តាមរយៈខ្សែទី 1C, 2A, 3 និង 4A។",
+    },
+    "aeb": {
+        "icon": "✈️🚌",
+        "title_en": "Airport Express Bus (AEB)",
+        "title_km": "ប្រតិបត្តិការខ្សែរត់ Airport Express Bus (AEB)",
+        "days_en": "Daily (Monday – Sunday)",
+        "days_km": "រៀងរាល់ថ្ងៃ",
+        "hours_en": "05:30 AM – 11:30 PM",
+        "hours_km": "០៥:៣០នាទីព្រឹក ដល់ ២៣:៣០នាទីយប់",
+        "wait_en": "10 to 15 minutes",
+        "wait_km": "១០ ទៅ ១៥ នាទី",
+        "price_en": "1,500 KHR",
+        "price_km": "១៥០០ រៀល",
+        "qty_en": "1 Person",
+        "qty_km": "១ នាក់",
+        "valid_en": "1 Trip",
+        "valid_km": "១ លើក",
+        "line_codes": ["AEB"],
+        "note_en": "Direct express bus corridor connecting central Phnom Penh (Canadia Park / Monivong / Hun Sen Blvd) to Techo International Airport.",
+        "note_km": "ខ្សែរថយន្តក្រុងពិសេសតភ្ជាប់ពីកណ្តាលរាជធានីភ្នំពេញ (សួនកាណាឌីយ៉ា / មហាវិថីព្រះមុនីវង្ស / មហាវិថីសម្តេចតេជោ ហ៊ុន សែន) ទៅអាកាសយានដ្ឋានអន្តរជាតិតេជោ។",
+    },
+}
+
+AEB_STOPS = [
+    {"stop_number": 1, "stop_name_kh": "ចំណតសួនកាណាឌីយ៉ា (Canadia Park Terminal)", "latitude": 11.5734, "longitude": 104.9189},
+    {"stop_number": 2, "stop_name_kh": "ផ្សារធំថ្មី (Central Market)", "latitude": 11.5696, "longitude": 104.9211},
+    {"stop_number": 3, "stop_name_kh": "ស្តុបបូកគោ (Bokor Traffic Light)", "latitude": 11.5453, "longitude": 104.9241},
+    {"stop_number": 4, "stop_name_kh": "ស្ពានអាកាសក្បាលថ្នល់ (Kbal Thnal Skybridge)", "latitude": 11.5312, "longitude": 104.9298},
+    {"stop_number": 5, "stop_name_kh": "ផ្សារទំនើបអ៊ីអន ៣ (AEON Mall Mean Chey)", "latitude": 11.4915, "longitude": 104.9265},
+    {"stop_number": 6, "stop_name_kh": "រង្វង់មូលគួរស្រូវ (Kour Srov Roundabout)", "latitude": 11.4385, "longitude": 104.9182},
+    {"stop_number": 7, "stop_name_kh": "អាកាសយានដ្ឋានអន្តរជាតិតេជោ (Techo International Airport)", "latitude": 11.3548, "longitude": 104.9288},
+]
+
 UI_TEXT = {
     "en": {
         "title": "🚌 CamTransit AI — Phnom Penh Smart Transit Navigator",
         "tab_route": "🧭 Live Route & Transfer Navigator",
-        "tab_cov": "🗺️ City Coverage & Underserved Areas",
+        "tab_services": "🚏 Public Bus Services & Schedules",
         "use_gps": "📡 Use Live GPS",
         "gps_hint": "Click the target button above to lock onto your GPS.",
         "my_gps": "📡 My Live GPS",
@@ -71,25 +144,30 @@ UI_TEXT = {
         "m_walk_start": "Walk to First Stop",
         "m_walk_end": "Walk to Destination",
         "sec_route": "#### 📋 Route & Transfers",
-        "sec_map": "#### 🗺️ Live Transit Map",
+        "sec_map": "#### 🗺️ Live Road-Snapped Transit Map",
         "walk_to": "🚶 **Walk {dist:.0f}m** → **{stop}**",
-        "leg_card": "**Leg {idx}: {line}**\n\n- **Board:** {board}\n- **Ride:** {stops} stops ({km:.2f} km)\n- **Exit:** {alight}",
+        "leg_card": "**{idx}. {line}**\n\n- **Board:** {board}\n- **Ride:** {stops} stops ({km:.2f} km)\n- **Exit:** {alight}",
         "transfer_card": "🔄 **TRANSFER ({walk:.0f}m walk)**\n\n**{f_stop}** ({f_line}) → **{t_stop}** ({t_line})",
         "walk_dest": "🚶 **Walk {dist:.0f}m** to destination",
-        "cov_caption": "Green dots = Well-served areas | Red dots = Underserved areas (far from any bus stop)",
-        "filter_lines": "Filter Bus Lines",
-        "admin_layer": "Administrative Layer",
-        "walk_thresh": "Walk Threshold (m)",
-        "k_stops": "Bus Stops Shown",
-        "k_lines": "Bus Lines Selected",
-        "k_under": "Underserved {layer}s (>{thresh}m)",
-        "k_under_sub": "{pct:.1f}% outside radius",
-        "k_median": "Median Distance ({layer})",
+        "svc_header": "Public Bus Services",
+        "svc_choose": "Select a Bus Service:",
+        "op_hours_title": "🕒 Operating Hours",
+        "op_days": "Operating Days",
+        "op_time": "Service Hours",
+        "op_wait": "Waiting Interval",
+        "ticket_title": "🎟️ Ticket Fare",
+        "col_price": "Price",
+        "col_qty": "Passengers",
+        "col_valid": "Validity",
+        "route_map_title": "🗺️ Public Bus Route Map",
+        "select_line_label": "Select Bus Line to Inspect on Map",
+        "all_service_lines": "All Lines in This Service",
+        "stops_count_badge": "{n} stops along selected route",
     },
     "km": {
         "title": "🚌 CamTransit AI — ប្រព័ន្ធណែនាំផ្លូវរថយន្តក្រុងឆ្លាតវៃរាជធានីភ្នំពេញ",
         "tab_route": "🧭 ស្វែងរកផ្លូវ និងការប្តូរខ្សែរថយន្តក្រុង",
-        "tab_cov": "🗺️ តំបន់គ្របដណ្តប់ និងតំបន់ខ្វះសេវាដឹកជញ្ជូន",
+        "tab_services": "🚏 សេវាកម្មរបស់រថយន្តក្រុងសាធារណៈ",
         "use_gps": "📡 ប្រើទីតាំង GPS ផ្ទាល់",
         "gps_hint": "សូមចុចប៊ូតុងគោលដៅខាងលើ ដើម្បីចាប់យកទីតាំង GPS របស់អ្នក។",
         "my_gps": "📡 ទីតាំង GPS ផ្ទាល់របស់ខ្ញុំ",
@@ -102,35 +180,43 @@ UI_TEXT = {
         "m_walk_start": "ដើរទៅចំណតដំបូង",
         "m_walk_end": "ដើរទៅគោលដៅ",
         "sec_route": "#### 📋 ជំហានធ្វើដំណើរ និងការប្តូរខ្សែ",
-        "sec_map": "#### 🗺️ ផែនទីបង្ហាញទិសដៅផ្ទាល់",
+        "sec_map": "#### 🗺️ ផែនទីបង្ហាញទិសដៅតាមបណ្តោយផ្លូវ",
         "walk_to": "🚶 **ដើរចម្ងាយ {dist:.0f} ម៉ែត្រ** → **{stop}**",
-        "leg_card": "**ជំហានទី {idx}៖ ជិះ {line}**\n\n- **ឡើងនៅចំណត៖** {board}\n- **ជិះកាត់៖** {stops} ចំណត ({km:.2f} គ.ម)\n- **ចុះនៅចំណត៖** {alight}",
+        "leg_card": "**{idx}. ជិះ {line}**\n\n- **ឡើងនៅចំណត៖** {board}\n- **ជិះកាត់៖** {stops} ចំណត ({km:.2f} គ.ម)\n- **ចុះនៅចំណត៖** {alight}",
         "transfer_card": "🔄 **ប្តូរខ្សែរថយន្តក្រុង (ដើរ {walk:.0f} ម៉ែត្រ)**\n\nចុះពី **{f_stop}** ({f_line}) → ឡើងនៅ **{t_stop}** ({t_line})",
         "walk_dest": "🚶 **ដើរចម្ងាយ {dist:.0f} ម៉ែត្រ** ទៅដល់គោលដៅ",
-        "cov_caption": "ចំណុចពណ៌បៃតង = តំបន់មានសេវារថយន្តក្រុង | ចំណុចពណ៌ក្រហម = តំបន់ឆ្ងាយពីចំណតរថយន្តក្រុង",
-        "filter_lines": "ជ្រើសរើសខ្សែរថយន្តក្រុង",
-        "admin_layer": "កម្រិតរដ្ឋបាល",
-        "walk_thresh": "ចម្ងាយដើរអតិបរមា (ម៉ែត្រ)",
-        "k_stops": "ចំណតរថយន្តក្រុងបង្ហាញ",
-        "k_lines": "ខ្សែរថយន្តបានជ្រើសរើស",
-        "k_under": "{layer} ដែលខ្វះសេវា (>{thresh}m)",
-        "k_under_sub": "{pct:.1f}% នៅក្រៅរង្វង់ដើរ",
-        "k_median": "ចម្ងាយមធ្យម ({layer})",
+        "svc_header": "សេវាកម្មរបស់រថយន្តក្រុងសាធារណៈ",
+        "svc_choose": "ជ្រើសរើសប្រភេទសេវាកម្ម៖",
+        "op_hours_title": "🕒 ពេលវេលាប្រតិបត្តិការ",
+        "op_days": "ថ្ងៃប្រតិបត្តិការ",
+        "op_time": "ម៉ោងប្រតិបត្តិការ",
+        "op_wait": "រយៈពេលរង់ចាំចន្លោះ",
+        "ticket_title": "🎟️ តម្លៃសំបុត្រ",
+        "col_price": "តម្លៃ",
+        "col_qty": "ចំនួន",
+        "col_valid": "សុពលភាព",
+        "route_map_title": "🗺️ តម្រាយផ្លូវរថយន្តក្រុងសាធារណៈ",
+        "select_line_label": "ជ្រើសរើសខ្សែរថយន្តក្រុងដើម្បីមើលលើផែនទី",
+        "all_service_lines": "បង្ហាញគ្រប់ខ្សែក្នុងសេវាកម្មនេះ",
+        "stops_count_badge": "មាន {n} ចំណតតាមបណ្តោយផ្លូវដែលបានជ្រើសរើស",
     },
 }
 
 
-def format_bus_line(line_kh: str, lang: str) -> str:
-    """Display bilingual bus line label e.g. 'Bus Line 2 (ខ្សែរថយន្តក្រុងទី ២)'."""
+def extract_line_code(line_kh: str) -> str:
     kh_digits = str.maketrans("០១២៣៤៥៦៧៨៩", "0123456789")
     normalized = str(line_kh).translate(kh_digits)
     match = re.search(r"(\d+\s*[A-C]?)", normalized)
-    en_name = f"Bus Line {match.group(1).strip()}" if match else str(line_kh)
+    return match.group(1).replace(" ", "") if match else str(line_kh)
+
+
+def format_bus_line(line_kh: str, lang: str) -> str:
+    code = extract_line_code(line_kh)
+    en_name = f"Bus Line {code}"
     return f"{en_name} ({line_kh})" if lang == "en" else f"{line_kh} ({en_name})"
 
 
 def format_stop_name(stop_kh: str) -> str:
-    """Append English landmark name if available in glossary for easy bilingual search."""
     clean = str(stop_kh).strip()
     for kh_key, en_val in KH_EN_GLOSSARY.items():
         if kh_key in clean:
@@ -143,6 +229,7 @@ def load_data():
     stops = pd.read_csv(DATA_DIR / "bus_stops_clean.csv")
     admin = pd.read_csv(DATA_DIR / "admin_transit_coverage.csv")
     stops["stop_bilingual"] = stops["stop_name_kh"].apply(format_stop_name)
+    stops["line_code"] = stops["bus_line"].apply(extract_line_code)
     return stops, admin
 
 
@@ -169,10 +256,10 @@ t = UI_TEXT[lang]
 with title_col:
     st.title(t["title"])
 
-tab_route, tab_coverage = st.tabs([t["tab_route"], t["tab_cov"]])
+tab_route, tab_services = st.tabs([t["tab_route"], t["tab_services"]])
 
 # ==============================================================================
-# TAB 1: LIVE ROUTE & TRANSFER NAVIGATOR
+# TAB 1: LIVE ROUTE & TRANSFER NAVIGATOR (ROAD-SNAPPED)
 # ==============================================================================
 with tab_route:
     stop_places = (
@@ -199,7 +286,6 @@ with tab_route:
     default_start = next((i for i, x in enumerate(place_labels) if "រង្វង់មូលតាខ្មៅ" in x), 0)
     default_end = next((i for i, x in enumerate(place_labels) if "សាលាតិចណូ" in x), 1)
 
-    # --- Compact GPS Toggle Row ---
     gps_toggle_col, gps_btn_col, _ = st.columns([1.0, 0.6, 3.4])
     with gps_toggle_col:
         use_gps = st.checkbox(t["use_gps"], value=False)
@@ -208,7 +294,6 @@ with tab_route:
         if use_gps:
             user_loc = streamlit_geolocation()
 
-    # --- Perfectly Aligned Origin & Destination Bars ---
     start_col, end_col = st.columns(2)
 
     with start_col:
@@ -301,23 +386,32 @@ with tab_route:
                 icon=folium.Icon(color="red", icon="flag"),
             ).add_to(route_map)
 
+            # 1. Road-snapped walking path: Origin -> First Boarding Stop
             first_stop = itinerary["segments"][0]["stops"][0]
-            folium.PolyLine(
-                [(origin_lat, origin_lng), (first_stop["latitude"], first_stop["longitude"])],
-                color="#555555",
-                weight=3,
-                dash_array="6, 8",
-                tooltip=f"Walk {itinerary['walk_to_first_stop_m']:.0f}m → {format_stop_name(first_stop['stop_name_kh'])}",
-            ).add_to(route_map)
+            walk_start_coords = snap_to_road(
+                ((origin_lat, origin_lng), (first_stop["latitude"], first_stop["longitude"])),
+                profile="foot",
+            )
+            if len(walk_start_coords) > 1:
+                folium.PolyLine(
+                    walk_start_coords,
+                    color="#444444",
+                    weight=4,
+                    dash_array="6, 8",
+                    tooltip=f"Walk {itinerary['walk_to_first_stop_m']:.0f}m → {format_stop_name(first_stop['stop_name_kh'])}",
+                ).add_to(route_map)
 
+            # 2. Road-snapped animated bus segments along actual Phnom Penh streets
             seg_colors = ["#0055ff", "#e6194b", "#911eb4", "#008080"]
             for s_idx, seg in enumerate(itinerary["segments"]):
                 color = seg_colors[s_idx % len(seg_colors)]
-                coords = [(s["latitude"], s["longitude"]) for s in seg["stops"]]
+                raw_coords = tuple((s["latitude"], s["longitude"]) for s in seg["stops"])
+                road_coords = snap_to_road(raw_coords, profile="driving")
                 line_label = format_bus_line(seg["bus_line"], lang)
-                if len(coords) > 1:
+
+                if len(road_coords) > 1:
                     AntPath(
-                        locations=coords,
+                        locations=road_coords,
                         color=color,
                         pulse_color="#ffffff",
                         weight=6,
@@ -336,15 +430,21 @@ with tab_route:
                         tooltip=f"#{step_i} {format_stop_name(stop['stop_name_kh'])} ({line_label})",
                     ).add_to(route_map)
 
+            # 3. Road-snapped walking path at each Transfer point
             for t_idx, tr in enumerate(itinerary["transfers"]):
                 seg_before_last_stop = itinerary["segments"][t_idx]["stops"][-1]
                 seg_after_first_stop = itinerary["segments"][t_idx + 1]["stops"][0]
 
-                folium.PolyLine(
-                    [
+                walk_tr_coords = snap_to_road(
+                    (
                         (seg_before_last_stop["latitude"], seg_before_last_stop["longitude"]),
                         (seg_after_first_stop["latitude"], seg_after_first_stop["longitude"]),
-                    ],
+                    ),
+                    profile="foot",
+                )
+
+                folium.PolyLine(
+                    walk_tr_coords,
                     color="#ff8800",
                     weight=4,
                     dash_array="5, 8",
@@ -357,86 +457,175 @@ with tab_route:
                     icon=folium.Icon(color="orange", icon="refresh"),
                 ).add_to(route_map)
 
+            # 4. Road-snapped walking path: Last Stop -> Destination
             last_stop = itinerary["segments"][-1]["stops"][-1]
-            folium.PolyLine(
-                [(last_stop["latitude"], last_stop["longitude"]), (dest_lat, dest_lng)],
-                color="#555555",
-                weight=3,
-                dash_array="6, 8",
-                tooltip=f"Walk {itinerary['walk_from_last_stop_m']:.0f}m to destination",
-            ).add_to(route_map)
+            walk_end_coords = snap_to_road(
+                ((last_stop["latitude"], last_stop["longitude"]), (dest_lat, dest_lng)),
+                profile="foot",
+            )
+            if len(walk_end_coords) > 1:
+                folium.PolyLine(
+                    walk_end_coords,
+                    color="#444444",
+                    weight=4,
+                    dash_array="6, 8",
+                    tooltip=f"Walk {itinerary['walk_from_last_stop_m']:.0f}m to destination",
+                ).add_to(route_map)
 
             st_folium(route_map, width=None, height=680, returned_objects=[])
 
 
 # ==============================================================================
-# TAB 2: CITY COVERAGE & UNDERSERVED AREAS
+# TAB 2: PUBLIC BUS SERVICES, SCHEDULES, FARES & ROAD-SNAPPED LINE MAPS
 # ==============================================================================
-with tab_coverage:
-    st.caption(t["cov_caption"])
+with tab_services:
+    st.subheader(t["svc_header"])
 
-    all_lines = sorted(stops_df["bus_line"].dropna().unique().tolist())
+    service_keys = ["daily", "walk_street", "aeb"]
+    service_labels = {
+        k: f"{SERVICES_DATA[k]['icon']}  {SERVICES_DATA[k][f'title_{lang}']}" for k in service_keys
+    }
 
-    f1, f2, f3 = st.columns([2, 1, 1])
-    with f1:
-        selected_lines = st.multiselect(
-            t["filter_lines"],
-            options=all_lines,
-            default=all_lines,
-            format_func=lambda x: format_bus_line(x, lang),
+    selected_service_key = st.radio(
+        t["svc_choose"],
+        options=service_keys,
+        format_func=lambda k: service_labels[k],
+        horizontal=True,
+    )
+
+    svc = SERVICES_DATA[selected_service_key]
+    st.info(f"**{svc['icon']} {svc[f'title_{lang}']}** — {svc[f'note_{lang}']}")
+
+    info_col, map_col = st.columns([0.95, 2.05])
+
+    with info_col:
+        st.markdown(f"#### {t['op_hours_title']}")
+        st.markdown(
+            f"- **{t['op_days']}:** {svc[f'days_{lang}']}\n"
+            f"- **{t['op_time']}:** {svc[f'hours_{lang}']}\n"
+            f"- **{t['op_wait']}:** {svc[f'wait_{lang}']}"
         )
-    with f2:
-        admin_level = st.selectbox(t["admin_layer"], options=["Sangkat", "Village", "Khan"], index=0)
-    with f3:
-        walk_threshold_m = st.slider(t["walk_thresh"], 200, 2000, 500, 100)
 
-    filtered_stops = stops_df[stops_df["bus_line"].isin(selected_lines)]
-    filtered_admin = admin_df[admin_df["location_type"] == admin_level].copy()
-    filtered_admin["is_underserved"] = filtered_admin["nearest_stop_m"] > walk_threshold_m
+        st.divider()
 
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric(t["k_stops"], f"{len(filtered_stops):,}")
-    k2.metric(t["k_lines"], f"{len(selected_lines)} / {len(all_lines)}")
-    underserved_count = int(filtered_admin["is_underserved"].sum())
-    total_admin = len(filtered_admin)
-    k3.metric(
-        t["k_under"].format(layer=admin_level, thresh=walk_threshold_m),
-        f"{underserved_count} / {total_admin}",
-        t["k_under_sub"].format(pct=(underserved_count / total_admin * 100) if total_admin else 0),
-        delta_color="inverse",
-    )
-    k4.metric(
-        t["k_median"].format(layer=admin_level),
-        f"{filtered_admin['nearest_stop_m'].median():.0f} m",
-    )
+        st.markdown(f"#### {t['ticket_title']}")
+        fare_df = pd.DataFrame(
+            [
+                {
+                    t["col_price"]: svc[f"price_{lang}"],
+                    t["col_qty"]: svc[f"qty_{lang}"],
+                    t["col_valid"]: svc[f"valid_{lang}"],
+                }
+            ]
+        )
+        st.table(fare_df)
 
-    cov_map = folium.Map(location=[11.5564, 104.9282], zoom_start=12, tiles="OpenStreetMap")
-    LocateControl(auto_start=False, position="topleft").add_to(cov_map)
-    line_color_map = {line: LINE_COLORS[i % len(LINE_COLORS)] for i, line in enumerate(all_lines)}
+        st.divider()
 
-    for line in selected_lines:
-        line_stops = filtered_stops[filtered_stops["bus_line"] == line].sort_values("stop_number")
-        coords = list(zip(line_stops["latitude"], line_stops["longitude"]))
-        if len(coords) > 1:
-            folium.PolyLine(
-                coords,
-                color=line_color_map.get(line, "#3388ff"),
-                weight=3,
-                opacity=0.75,
-                tooltip=format_bus_line(line, lang),
-            ).add_to(cov_map)
+        st.markdown(f"#### {t['route_map_title']}")
+        available_codes = svc["line_codes"]
 
-    for _, row in filtered_admin.iterrows():
-        is_far = row["is_underserved"]
-        marker_color = "#d90429" if is_far else "#2b9348"
-        folium.CircleMarker(
-            [row["latitude"], row["longitude"]],
-            radius=6 if admin_level != "Village" else 3.5,
-            color=marker_color,
-            fill=True,
-            fill_color=marker_color,
-            fill_opacity=0.75,
-            tooltip=f"{row['name']} ({row['nearest_stop_m']:.0f}m to nearest stop)",
-        ).add_to(cov_map)
+        if selected_service_key == "aeb":
+            selected_code = "AEB"
+            st.success("🔵 **AEB** — Airport Express Bus")
+        else:
+            line_options = ["ALL"] + available_codes
+            selected_code = st.selectbox(
+                t["select_line_label"],
+                options=line_options,
+                format_func=lambda c: t["all_service_lines"]
+                if c == "ALL"
+                else (f"Line {c} (ខ្សែទី {c})" if lang == "en" else f"ខ្សែទី {c} (Line {c})"),
+            )
 
-    st_folium(cov_map, width=None, height=620, returned_objects=[])
+            badge_html = " ".join(
+                [
+                    f"<span style='display:inline-block;padding:4px 10px;margin:2px;border-radius:14px;"
+                    f"background-color:{LINE_COLORS[i % len(LINE_COLORS)]};color:white;font-weight:bold;font-size:13px;'>"
+                    f"{code}</span>"
+                    for i, code in enumerate(available_codes)
+                ]
+            )
+            st.markdown(badge_html, unsafe_allow_html=True)
+
+    with map_col:
+        if selected_service_key == "aeb":
+            aeb_df = pd.DataFrame(AEB_STOPS)
+            svc_map = folium.Map(location=[11.465, 104.924], zoom_start=11, tiles="OpenStreetMap")
+            LocateControl(auto_start=False, position="topleft").add_to(svc_map)
+
+            raw_coords = tuple(zip(aeb_df["latitude"], aeb_df["longitude"]))
+            road_coords = snap_to_road(raw_coords, profile="driving")
+
+            AntPath(
+                locations=road_coords,
+                color="#1f78b4",
+                pulse_color="#ffffff",
+                weight=6,
+                delay=800,
+                tooltip="AEB — Airport Express Bus",
+            ).add_to(svc_map)
+
+            for _, s_row in aeb_df.iterrows():
+                is_terminal = s_row["stop_number"] in (1, len(aeb_df))
+                folium.Marker(
+                    [s_row["latitude"], s_row["longitude"]],
+                    tooltip=f"#{s_row['stop_number']} {s_row['stop_name_kh']}",
+                    icon=folium.Icon(
+                        color="blue" if s_row["stop_number"] == 1 else ("red" if is_terminal else "cadetblue"),
+                        icon="plane" if s_row["stop_number"] == len(aeb_df) else "bus",
+                        prefix="fa",
+                    ),
+                ).add_to(svc_map)
+
+            st.caption(t["stops_count_badge"].format(n=len(aeb_df)))
+            st_folium(svc_map, width=None, height=600, returned_objects=[])
+        else:
+            if selected_code == "ALL":
+                target_stops = stops_df[stops_df["line_code"].isin(available_codes)]
+            else:
+                target_stops = stops_df[stops_df["line_code"] == selected_code]
+
+            svc_map = folium.Map(location=[11.5564, 104.9282], zoom_start=12, tiles="OpenStreetMap")
+            LocateControl(auto_start=False, position="topleft").add_to(svc_map)
+
+            active_lines = sorted(target_stops["bus_line"].dropna().unique().tolist())
+            for i, line in enumerate(active_lines):
+                line_stops = target_stops[target_stops["bus_line"] == line].sort_values("stop_number")
+                raw_coords = tuple(zip(line_stops["latitude"], line_stops["longitude"]))
+                road_coords = snap_to_road(raw_coords, profile="driving")
+                color = LINE_COLORS[i % len(LINE_COLORS)]
+                line_label = format_bus_line(line, lang)
+
+                if len(road_coords) > 1:
+                    if selected_code != "ALL":
+                        AntPath(
+                            locations=road_coords,
+                            color=color,
+                            pulse_color="#ffffff",
+                            weight=5,
+                            delay=800,
+                            tooltip=line_label,
+                        ).add_to(svc_map)
+                    else:
+                        folium.PolyLine(
+                            road_coords,
+                            color=color,
+                            weight=3.5,
+                            opacity=0.85,
+                            tooltip=line_label,
+                        ).add_to(svc_map)
+
+                for _, s_row in line_stops.iterrows():
+                    folium.CircleMarker(
+                        [s_row["latitude"], s_row["longitude"]],
+                        radius=4,
+                        color=color,
+                        fill=True,
+                        fill_color=color,
+                        fill_opacity=0.9,
+                        tooltip=f"{format_stop_name(s_row['stop_name_kh'])} ({line_label})",
+                    ).add_to(svc_map)
+
+            st.caption(t["stops_count_badge"].format(n=len(target_stops)))
+            st_folium(svc_map, width=None, height=600, returned_objects=[])
